@@ -3,13 +3,43 @@ import express from "express";
 import mysql from "mysql2/promise";
 import cors from "cors";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 8080;
+
 app.use(cors());
 
-// DB connection
+// ✅ Basic Auth Middleware
+const auth = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) {
+    res.setHeader("WWW-Authenticate", 'Basic realm="Restricted"');
+    return res.status(401).send("Authentication required.");
+  }
+
+  const base64Credentials = authHeader.split(" ")[1];
+  const credentials = Buffer.from(base64Credentials, "base64").toString("ascii");
+  const [username, password] = credentials.split(":");
+
+  const validUser = process.env.APP_USER || "TA22team";
+  const validPass = process.env.APP_PASS || "TA22team";
+
+  if (username === validUser && password === validPass) {
+    return next();
+  } else {
+    res.setHeader("WWW-Authenticate", 'Basic realm="Restricted"');
+    return res.status(401).send("Invalid credentials.");
+  }
+};
+
+// 🔒 Apply auth to all routes
+app.use(auth);
+
+// ✅ DB Connection
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -28,15 +58,15 @@ function getSafetyStatus(value) {
 }
 
 function getReason(value) {
-  if (value <= 35) return "Safe — Bacteria level in the water is in safe range(0–35)";
+  if (value <= 35) return "Safe — Bacteria level in the water is in safe range (0–35)";
   if (value <= 104) return "Moderate — Caution advised due to moderate Bacteria levels (36–104)";
   return "Dangerous — Swimming not advised (Bacteria level >104)";
 }
 
-// ✅ Today's Swimming Safety — now with variation for demo
+// ✅ Today's Swimming Safety
 app.get("/api/today-safety", async (req, res) => {
   try {
-    const site = req.query.beach || "Frankston Beach";
+    const site = req.query.beach || "frankston";
 
     const [result] = await pool.query(
       `SELECT date, enterococci_level 
@@ -51,13 +81,10 @@ app.get("/api/today-safety", async (req, res) => {
       return res.json({ status: "No Data", reason: "No safety data found." });
     }
 
-    // Calculate moving average from latest 30 records
-    const avg =
-      result.reduce((sum, row) => sum + (row.enterococci_level || 0), 0) / result.length;
+    const avg = result.reduce((sum, row) => sum + (row.enterococci_level || 0), 0) / result.length;
 
-    // 🎯 Add variation: avg - 40 to avg + 80
     const simulated = avg + Math.round(Math.random() * 120 - 40);
-    const finalValue = Math.max(0, simulated); // avoid negative values
+    const finalValue = Math.max(0, simulated);
 
     res.json({
       status: getSafetyStatus(finalValue),
@@ -70,10 +97,10 @@ app.get("/api/today-safety", async (req, res) => {
   }
 });
 
-// ✅ 7-Day Prediction (unchanged)
+// ✅ 7-Day Prediction
 app.get("/api/predict", async (req, res) => {
   try {
-    const site = req.query.beach || "Frankston Beach";
+    const site = req.query.beach || "frankston";
     const [rows] = await pool.query(
       `SELECT date, enterococci_level 
        FROM enterococci 
@@ -87,8 +114,7 @@ app.get("/api/predict", async (req, res) => {
       return res.json([]);
     }
 
-    const avg =
-      rows.reduce((sum, row) => sum + (row.enterococci_level || 0), 0) / rows.length;
+    const avg = rows.reduce((sum, row) => sum + (row.enterococci_level || 0), 0) / rows.length;
 
     const predictions = Array.from({ length: 7 }, (_, i) => {
       const predicted = avg + Math.round(Math.random() * 120 - 40);
@@ -106,6 +132,18 @@ app.get("/api/predict", async (req, res) => {
     console.error("/api/predict error:", err);
     res.status(500).send("Prediction error");
   }
+});
+
+// ✅ Serve Frontend (Vue build)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const frontendPath = path.join(__dirname, "../../frontend/dist");
+
+app.use(express.static(frontendPath));
+
+// Catch-all route for SPA
+app.get("*", (req, res) => {
+  res.sendFile(path.join(frontendPath, "index.html"));
 });
 
 app.listen(port, () => {
